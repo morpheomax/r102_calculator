@@ -4,6 +4,7 @@ import pandas as pd
 from r102_engine import (
     ApplianceType,
     HoodFilterType,
+    DesignMode,
     Appliance,
     Hood,
     Duct,
@@ -76,6 +77,19 @@ with st.sidebar:
         step=50,
     )
 
+    modo_label = st.radio(
+        "Modo de diseño",
+        [
+            "Diseño por equipo (appliance-specific)",
+            "Overlapping estándar",
+        ],
+    )
+    design_mode = (
+        DesignMode.APPLIANCE_SPECIFIC
+        if "equipo" in modo_label
+        else DesignMode.OVERLAPPING
+    )
+
     include_service = st.checkbox("Incluir servicio de montaje", value=True)
 
     include_ext_k = st.checkbox("Incluir extintor Clase K", value=False)
@@ -106,7 +120,7 @@ num_appliances = st.number_input(
     step=1,
 )
 
-appliances: list[Appliance] = []
+appliances = []
 
 tipo_options = {
     "Freidora": ApplianceType.FRYER,
@@ -117,7 +131,7 @@ tipo_options = {
 
 for i in range(num_appliances):
     st.markdown(f"### Equipo {i + 1}")
-    cols = st.columns(6)
+    cols = st.columns(7)
 
     with cols[0]:
         tipo_label = st.selectbox(
@@ -174,6 +188,17 @@ for i in range(num_appliances):
             key=f"altb_{i}",
         )
 
+    with cols[6]:
+        default_pos = max(0, int((hood_length - ancho) / 2))
+        pos_inicio = st.number_input(
+            "Posición desde borde izquierdo (mm)",
+            min_value=0,
+            max_value=int(hood_length),
+            value=default_pos,
+            step=50,
+            key=f"pos_{i}",
+        )
+
     # Nº de bateas solo si es freidora
     num_vats = 1
     if tipo == ApplianceType.FRYER:
@@ -192,6 +217,7 @@ for i in range(num_appliances):
             fondo_mm=fondo,
             altura_superficie_mm=altura_sup,
             altura_boquilla_sobre_superficie_mm=altura_boq,
+            pos_inicio_mm=pos_inicio,
             num_vats=num_vats,
         )
     )
@@ -219,6 +245,7 @@ if st.button("Calcular sistema R-102", type="primary"):
             incluir_servicio_montaje=include_service,
             incluir_extintor_k=include_ext_k,
             cantidad_extintores_k=qty_ext_k,
+            design_mode=design_mode,
         )
 
         result = design_r102_system(di, iva_rate=iva_rate / 100.0)
