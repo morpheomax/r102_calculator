@@ -21,6 +21,11 @@ class HoodFilterType(str, Enum):
     V_BANK = "en V"
 
 
+class DesignMode(str, Enum):
+    APPLIANCE_SPECIFIC = "appliance_specific"
+    OVERLAPPING = "overlapping"
+
+
 @dataclass
 class Appliance:
     tipo: ApplianceType
@@ -29,7 +34,8 @@ class Appliance:
     fondo_mm: float
     altura_superficie_mm: float  # altura de la superficie del equipo desde el piso
     altura_boquilla_sobre_superficie_mm: float  # boquilla sobre la superficie
-    num_vats: int = 1  # solo aplica a freidoras (1 o 2 bateas)
+    pos_inicio_mm: float  # posición desde el borde izquierdo de la campana
+    num_vats: int = 1     # solo aplica a freidoras (1 o 2 bateas)
 
 
 @dataclass
@@ -142,7 +148,6 @@ def design_fryer_nozzles(app: Appliance) -> Dict[str, int]:
     Freidora:
     - Boquilla 3N (código 439841).
     - Área total = ancho x fondo x nº de bateas.
-    - Reglas simplificadas basadas en área y lado máximo.
     """
     x = app.ancho_mm / 1000.0  # m
     y = app.fondo_mm / 1000.0  # m
@@ -232,6 +237,7 @@ class DesignInput:
     incluir_servicio_montaje: bool = True
     incluir_extintor_k: bool = False
     cantidad_extintores_k: int = 1
+    design_mode: DesignMode = DesignMode.APPLIANCE_SPECIFIC
 
 
 @dataclass
@@ -251,37 +257,53 @@ def design_r102_system(design_input: DesignInput, iva_rate: float = 0.19) -> Des
     hood = design_input.hood
     duct = design_input.duct
 
-    # 1) Boquillas por equipo + validaciones de altura
+    # 1) Validaciones geométricas y de altura
     for app in design_input.appliances:
-        # Validación simple de altura de boquilla sobre superficie
+        # Altura boquilla sobre superficie
         if not (800 <= app.altura_boquilla_sobre_superficie_mm <= 1500):
             warnings.append(
                 f"Altura de boquilla fuera de rango razonable para '{app.nombre}' "
                 f"({app.altura_boquilla_sobre_superficie_mm} mm sobre la superficie)."
             )
 
-        # Altura libre entre superficie del equipo y campana
+        # Distancia campana - superficie equipo
         clearance = hood.altura_suelo_mm - app.altura_superficie_mm
         if clearance < 400 or clearance > 1500:
             warnings.append(
                 f"Distancia campana-equipo para '{app.nombre}' es atípica: "
-                f"{clearance} mm (revisar configuración en terreno)."
+                f"{clearance} mm (revisar en terreno)."
             )
 
-        # Reglas por tipo de equipo
-        if app.tipo == ApplianceType.FRYER:
-            noz = design_fryer_nozzles(app)
-        elif app.tipo == ApplianceType.GRIDDLE:
-            noz = design_griddle_nozzles(app)
-        elif app.tipo in (ApplianceType.RANGE_2B, ApplianceType.RANGE_4B):
-            noz = design_range_nozzles(app)
-        else:
-            noz = {}
+        # Verificar que el equipo esté bajo la campana
+        fin_equipo = app.pos_inicio_mm + app.ancho_mm
+        if app.pos_inicio_mm < 0 or fin_equipo > hood.largo_mm:
+            warnings.append(
+                f"El equipo '{app.nombre}' queda parcial o totalmente fuera de la campana "
+                f"(inicio={app.pos_inicio_mm} mm, ancho={app.ancho_mm} mm, campana={hood.largo_mm} mm)."
+            )
 
-        for code, qty in noz.items():
-            nozzle_counts[code] = nozzle_counts.get(code, 0) + qty
+    # 2) Boquillas por equipos según modo
+    if design_input.design_mode == DesignMode.APPLIANCE_SPECIFIC:
+        for app in design_input.appliances:
+            if app.tipo == ApplianceType.FRYER:
+                noz = design_fryer_nozzles(app)
+            elif app.tipo == ApplianceType.GRIDDLE:
+                noz = design_griddle_nozzles(app)
+            elif app.tipo in (ApplianceType.RANGE_2B, ApplianceType.RANGE_4B):
+                noz = design_range_nozzles(app)
+            else:
+                noz = {}
 
-    # 2) Boquillas para ducto (simplificado, multiplicado por nº de ductos)
+            for code, qty in noz.items():
+                nozzle_counts[code] = nozzle_counts.get(code, 0) + qty
+    else:
+        # OVERLAPPING: boquillas de superficie 290 distribuidas a lo largo de la campana
+        hood_length_m = hood.largo_mm / 1000.0
+        paso = 0.6  # separación estándar entre boquillas (m)
+        num_surface_nozzles = max(1, ceil(hood_length_m / paso))
+        nozzle_counts["439845"] = nozzle_counts.get("439845", 0) + num_surface_nozzles
+
+    # 3) Boquillas para ducto (simplificado, multiplicado por nº de ductos)
     if duct.perimetro_mm > 0 and duct.cantidad > 0:
         perim = duct.perimetro_mm
         if perim <= 1270:
@@ -291,17 +313,15 @@ def design_r102_system(design_input: DesignInput, iva_rate: float = 0.19) -> Des
         else:
             raise ValueError("Perímetro de ducto fuera de rango para esta versión simplificada")
 
-    # 3) Boquillas para campana/pleno (1N cada 3 m de largo + ajuste por filtro en V)
+    # 4) Boquillas para campana/pleno (1N cada 3 m + ajuste por filtro en V)
     hood_length_m = hood.largo_mm / 1000.0
     num_hood_nozzles = max(1, ceil(hood_length_m / 3.0))
-
-    # Ajuste simple si el filtro es en V (puede requerir más cobertura)
     if hood.filtro == HoodFilterType.V_BANK:
         num_hood_nozzles += 1
 
     nozzle_counts["439838"] = nozzle_counts.get("439838", 0) + num_hood_nozzles
 
-    # 4) Número de caudal total
+    # 5) Número de caudal total
     total_flow = 0.0
     for code, qty in nozzle_counts.items():
         flow = NOZZLE_FLOW_NUMBER.get(code)
@@ -309,14 +329,14 @@ def design_r102_system(design_input: DesignInput, iva_rate: float = 0.19) -> Des
             raise ValueError(f"No hay número de caudal definido para boquilla {code}")
         total_flow += flow * qty
 
-    # 5) Selección de cilindros y cartucho
+    # 6) Selección de cilindros y cartucho
     cyl_cfg = select_cylinders_and_cartridge(total_flow)
 
-    # 6) Construir BOM: boquillas
+    # 7) Construir BOM: boquillas
     for code, qty in nozzle_counts.items():
         add_bom_item(bom, code, qty)
 
-    # 7) Cilindros y agente
+    # 8) Cilindros y agente
     if cyl_cfg.num_cylinders_15:
         add_bom_item(bom, "429864", cyl_cfg.num_cylinders_15)
         add_bom_item(bom, "79694", cyl_cfg.num_cylinders_15)
@@ -325,18 +345,18 @@ def design_r102_system(design_input: DesignInput, iva_rate: float = 0.19) -> Des
         add_bom_item(bom, "429862", cyl_cfg.num_cylinders_30)
         add_bom_item(bom, "79372", cyl_cfg.num_cylinders_30)
 
-    # 8) Cartucho de gas
+    # 9) Cartucho de gas
     add_bom_item(bom, cyl_cfg.cartridge_code, 1)
 
-    # 9) Servicio de montaje
+    # 10) Servicio de montaje
     if design_input.incluir_servicio_montaje:
         add_bom_item(bom, "SERV-MONT-R102", 1)
 
-    # 10) Extintor Clase K opcional
+    # 11) Extintor Clase K opcional
     if design_input.incluir_extintor_k and design_input.cantidad_extintores_k > 0:
         add_bom_item(bom, "KEXT-6L", design_input.cantidad_extintores_k)
 
-    # 11) Totales
+    # 12) Totales
     subtotal = sum(item.part.unit_price * item.quantity for item in bom)
     iva_amount = round(subtotal * iva_rate, 0)
     total = subtotal + iva_amount
@@ -380,6 +400,7 @@ def demo():
             fondo_mm=711,
             altura_superficie_mm=900,
             altura_boquilla_sobre_superficie_mm=1100,
+            pos_inicio_mm=200,
             num_vats=2,
         ),
         Appliance(
@@ -389,6 +410,7 @@ def demo():
             fondo_mm=600,
             altura_superficie_mm=900,
             altura_boquilla_sobre_superficie_mm=1100,
+            pos_inicio_mm=1000,
         ),
     ]
 
@@ -399,6 +421,7 @@ def demo():
         incluir_servicio_montaje=True,
         incluir_extintor_k=True,
         cantidad_extintores_k=1,
+        design_mode=DesignMode.APPLIANCE_SPECIFIC,
     )
     out = design_r102_system(di)
 
