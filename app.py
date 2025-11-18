@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
-import io
 
 from r102_engine import (
     ApplianceType,
@@ -18,7 +17,7 @@ from r102_engine import (
 )
 
 # -------------------------
-# Helpers para exportar
+# Helpers para resumen
 # -------------------------
 
 def build_areas_summary_df(areas_data, areas_results):
@@ -57,122 +56,6 @@ def build_bom_df(global_quote):
             }
         )
     return pd.DataFrame(rows)
-
-
-def export_to_excel(project_result, areas_summary_df, bom_df):
-    """
-    Exporta a Excel. Intenta usar xlsxwriter si está disponible; si no,
-    usa el engine por defecto de pandas (openpyxl normalmente).
-    """
-    output = io.BytesIO()
-
-    # Construimos un dict de hojas -> dataframes para no repetir código
-    sheets = {
-        "Proyecto": pd.DataFrame(
-            {
-                "Campo": ["Proyecto", "Cliente", "IVA %", "Subtotal", "Total"],
-                "Valor": [
-                    project_result.nombre_proyecto,
-                    project_result.nombre_cliente,
-                    int(project_result.quote_global.iva_rate * 100),
-                    project_result.quote_global.subtotal,
-                    project_result.quote_global.total,
-                ],
-            }
-        ),
-        "Resumen_Areas": areas_summary_df,
-        "BOM_Global": bom_df,
-    }
-
-    # 1) Intentar con xlsxwriter
-    try:
-        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-            for sheet_name, df in sheets.items():
-                df.to_excel(writer, index=False, sheet_name=sheet_name)
-    except Exception:
-        # 2) Fallback: engine por defecto (openpyxl u otro)
-        output = io.BytesIO()
-        with pd.ExcelWriter(output) as writer:
-            for sheet_name, df in sheets.items():
-                df.to_excel(writer, index=False, sheet_name=sheet_name)
-
-    output.seek(0)
-    return output
-
-
-def export_to_pdf(project_result, areas_summary_df, bom_df):
-    """
-    Exporta un PDF sencillo con resumen de proyecto, áreas y BOM.
-    Si falta reportlab, devuelve (None, mensaje_error).
-    """
-    try:
-        from reportlab.lib.pagesizes import letter
-        from reportlab.pdfgen import canvas
-    except ImportError:
-        return None, (
-            "Para exportar a PDF necesitas instalar reportlab en tu entorno "
-            "(pip install reportlab)."
-        )
-
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=letter)
-    width, height = letter
-
-    y = height - 40
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(40, y, "Diseño sistema de supresión R-102")
-    y -= 20
-    c.setFont("Helvetica", 10)
-    c.drawString(40, y, f"Proyecto: {project_result.nombre_proyecto}")
-    y -= 14
-    c.drawString(40, y, f"Cliente: {project_result.nombre_cliente}")
-    y -= 14
-    c.drawString(
-        40,
-        y,
-        f"IVA: {int(project_result.quote_global.iva_rate * 100)}%   "
-        f"Total: ${project_result.quote_global.total:,.0f}",
-    )
-    y -= 24
-
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(40, y, "Resumen por campana")
-    y -= 16
-    c.setFont("Helvetica", 9)
-    for _, row in areas_summary_df.iterrows():
-        line = (
-            f"{row['Campana']}: Caudal={row['Caudal_total']:.1f}, "
-            f"Cil 1.5={row['Cil_1_5_gal']}, "
-            f"Cil 3.0={row['Cil_3_0_gal']}, Cartucho={row['Cartucho']}"
-        )
-        if y < 80:
-            c.showPage()
-            y = height - 40
-            c.setFont("Helvetica", 9)
-        c.drawString(40, y, line)
-        y -= 12
-
-    y -= 16
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(40, y, "BOM global (resumen)")
-    y -= 16
-    c.setFont("Helvetica", 9)
-    for _, row in bom_df.iterrows():
-        line = (
-            f"{row['Código']} - {row['Descripción']} "
-            f"(x{row['Cantidad']}) = ${row['Total línea']:,.0f}"
-        )
-        if y < 80:
-            c.showPage()
-            y = height - 40
-            c.setFont("Helvetica", 9)
-        c.drawString(40, y, line)
-        y -= 12
-
-    c.showPage()
-    c.save()
-    buffer.seek(0)
-    return buffer, None
 
 
 # -------------------------
@@ -696,7 +579,7 @@ if st.button("Calcular sistema R-102 para todo el proyecto", type="primary"):
                 )
 
         # -------------------------
-        # BOM y totales globales del proyecto + export
+        # BOM y totales globales del proyecto + COPIAR A EXCEL
         # -------------------------
         st.divider()
         st.markdown("## BOM y costos globales del proyecto")
@@ -713,39 +596,34 @@ if st.button("Calcular sistema R-102 para todo el proyecto", type="primary"):
         )
         st.write(f"- Total: **${global_quote.total:,.0f}**")
 
-        # DataFrames para exportar
         areas_summary_df = build_areas_summary_df(areas_data, project_result.areas)
 
-        st.markdown("### Exportar resultados")
+        st.markdown("### Copiar resultados para usar en Excel")
 
-        # Excel
-        excel_bytes = export_to_excel(project_result, areas_summary_df, bom_df)
-        st.download_button(
-            label="⬇️ Descargar Excel (proyecto)",
-            data=excel_bytes,
-            file_name=f"R102_{project_result.nombre_proyecto}.xlsx",
-            mime=(
-                "application/vnd.openxmlformats-"
-                "officedocument.spreadsheetml.sheet"
-            ),
+        # Armamos un texto tab-separado para pegar en Excel
+        excel_like_text = ""
+
+        excel_like_text += "# Proyecto\n"
+        excel_like_text += f"Proyecto\t{project_result.nombre_proyecto}\n"
+        excel_like_text += f"Cliente\t{project_result.nombre_cliente}\n"
+        excel_like_text += f"IVA (%)\t{int(global_quote.iva_rate * 100)}\n"
+        excel_like_text += f"Subtotal\t{global_quote.subtotal}\n"
+        excel_like_text += f"Total\t{global_quote.total}\n\n"
+
+        excel_like_text += "## Resumen por campana\n"
+        excel_like_text += areas_summary_df.to_csv(index=False, sep="\t")
+        excel_like_text += "\n## BOM global\n"
+        excel_like_text += bom_df.to_csv(index=False, sep="\t")
+
+        st.text_area(
+            "Selecciona todo este contenido, cópialo y pégalo en una hoja de Excel (se separará por columnas automáticamente).",
+            value=excel_like_text,
+            height=300,
         )
 
-        # PDF
-        pdf_bytes, pdf_error = export_to_pdf(project_result, areas_summary_df, bom_df)
-        if pdf_bytes:
-            st.download_button(
-                label="⬇️ Descargar PDF (proyecto)",
-                data=pdf_bytes,
-                file_name=f"R102_{project_result.nombre_proyecto}.pdf",
-                mime="application/pdf",
-            )
-        elif pdf_error:
-            st.warning(pdf_error)
-
         st.info(
-            "Usa estos archivos como respaldo del cálculo y para comparar con "
-            "proyectos reales. Si encuentras diferencias con el diseño manual, "
-            "anótalas para ajustar el motor en la siguiente iteración."
+            "Con esto puedes guardar los resultados en tu propio archivo Excel y "
+            "compararlos con los cálculos/manuales de proyectos reales."
         )
 
     except Exception as e:
@@ -756,4 +634,3 @@ else:
         "Configura las campanas (hazard areas) y sus equipos, luego presiona "
         "**Calcular sistema R-102 para todo el proyecto**."
     )
-
