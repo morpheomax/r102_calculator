@@ -9,9 +9,11 @@ from r102_engine import (
     Hood,
     Duct,
     DesignInput,
-    design_r102_system,
+    design_r102_system,  # lo seguimos importando por compatibilidad
     PART_CATALOG,
     NOZZLE_FLOW_NUMBER,
+    ProjectInput,
+    design_project,
 )
 
 # -------------------------
@@ -31,6 +33,18 @@ st.write(
 # -------------------------
 
 with st.sidebar:
+    st.header("Datos de proyecto")
+
+    project_name = st.text_input(
+        "Nombre del proyecto",
+        value="Restaurante Demo",
+    )
+
+    client_name = st.text_input(
+        "Nombre del cliente",
+        value="Cliente X",
+    )
+
     st.header("Datos de campana y ducto")
 
     hood_length = st.number_input(
@@ -109,6 +123,13 @@ with st.sidebar:
 # -------------------------
 # Equipos bajo la campana
 # -------------------------
+
+st.subheader("Hazard area / Campana")
+
+area_name = st.text_input(
+    "Nombre de la área/campana",
+    value="Campana 1",
+)
 
 st.subheader("Equipos bajo la campana")
 
@@ -238,6 +259,7 @@ if st.button("Calcular sistema R-102", type="primary"):
         )
         duct = Duct(perimetro_mm=duct_perimeter, cantidad=num_ducts)
 
+        # Hazard area única (por ahora)
         di = DesignInput(
             hood=hood,
             duct=duct,
@@ -246,9 +268,27 @@ if st.button("Calcular sistema R-102", type="primary"):
             incluir_extintor_k=include_ext_k,
             cantidad_extintores_k=qty_ext_k,
             design_mode=design_mode,
+            nombre_area=area_name,
         )
 
-        result = design_r102_system(di, iva_rate=iva_rate / 100.0)
+        # Proyecto con una sola hazard area (dejamos listo para multi-areas a futuro)
+        project_input = ProjectInput(
+            nombre_proyecto=project_name,
+            nombre_cliente=client_name,
+            hazard_areas=[di],
+            iva_rate=iva_rate / 100.0,
+        )
+
+        project_result = design_project(project_input)
+
+        # En esta versión hay solo 1 área
+        area_result = project_result.areas[0]
+        global_quote = project_result.quote_global
+
+        st.markdown(
+            f"### Proyecto: **{project_result.nombre_proyecto}** — Cliente: **{project_result.nombre_cliente}**"
+        )
+        st.markdown(f"#### Área: **{area_result.nombre_area or 'Sin nombre'}**")
 
         col1, col2 = st.columns(2)
 
@@ -258,17 +298,17 @@ if st.button("Calcular sistema R-102", type="primary"):
         with col1:
             st.markdown("#### Resumen técnico")
 
-            st.metric("Número de caudal total", f"{result.total_flow_number:.1f}")
+            st.metric("Número de caudal total", f"{area_result.total_flow_number:.1f}")
 
-            if result.warnings:
+            if area_result.warnings:
                 st.warning(
                     "Advertencias de diseño:\n\n- " +
-                    "\n- ".join(result.warnings)
+                    "\n- ".join(area_result.warnings)
                 )
 
-            st.write("**Boquillas calculadas:**")
+            st.write("**Boquillas calculadas (por área):**")
             nozzle_rows = []
-            for code, qty in result.nozzle_breakdown.items():
+            for code, qty in area_result.nozzle_breakdown.items():
                 part = PART_CATALOG.get(code)
                 nozzle_rows.append(
                     {
@@ -281,8 +321,8 @@ if st.button("Calcular sistema R-102", type="primary"):
             df_nozzles = pd.DataFrame(nozzle_rows)
             st.dataframe(df_nozzles, use_container_width=True)
 
-            st.write("**Cilindros seleccionados:**")
-            cyl = result.cylinder_config
+            st.write("**Cilindros seleccionados (área):**")
+            cyl = area_result.cylinder_config
             st.write(
                 f"- Cilindros 1,5 gal: **{cyl.num_cylinders_15}**  \n"
                 f"- Cilindros 3,0 gal: **{cyl.num_cylinders_30}**  \n"
@@ -290,13 +330,13 @@ if st.button("Calcular sistema R-102", type="primary"):
             )
 
         # -------------------------
-        # Cotización
+        # Cotización (global proyecto)
         # -------------------------
         with col2:
-            st.markdown("#### Cotización estimada")
+            st.markdown("#### Cotización estimada (proyecto)")
 
             bom_rows = []
-            for item in result.quote.bom:
+            for item in global_quote.bom:
                 line_total = item.part.unit_price * item.quantity
                 bom_rows.append(
                     {
@@ -312,18 +352,19 @@ if st.button("Calcular sistema R-102", type="primary"):
             df_bom = pd.DataFrame(bom_rows)
             st.dataframe(df_bom, use_container_width=True)
 
-            st.write("**Totales:**")
-            st.write(f"- Subtotal: **${result.quote.subtotal:,.0f}**")
+            st.write("**Totales proyecto:**")
+            st.write(f"- Subtotal: **${global_quote.subtotal:,.0f}**")
             st.write(
-                f"- IVA ({int(result.quote.iva_rate * 100)}%): "
-                f"**${result.quote.iva_amount:,.0f}**"
+                f"- IVA ({int(global_quote.iva_rate * 100)}%): "
+                f"**${global_quote.iva_amount:,.0f}**"
             )
-            st.write(f"- Total: **${result.quote.total:,.0f}**")
+            st.write(f"- Total: **${global_quote.total:,.0f}**")
 
     except Exception as e:
         st.error(f"Error en el cálculo: {e}")
 
 else:
     st.info(
-        "Configura campana, ducto y equipos, luego presiona **Calcular sistema R-102**."
+        "Configura proyecto, campana, ducto y equipos, luego presiona **Calcular sistema R-102**."
     )
+
