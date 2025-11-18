@@ -60,10 +60,15 @@ def build_bom_df(global_quote):
 
 
 def export_to_excel(project_result, areas_summary_df, bom_df):
+    """
+    Exporta a Excel. Intenta usar xlsxwriter si está disponible; si no,
+    usa el engine por defecto de pandas (openpyxl normalmente).
+    """
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        # Hoja de proyecto
-        meta_df = pd.DataFrame(
+
+    # Construimos un dict de hojas -> dataframes para no repetir código
+    sheets = {
+        "Proyecto": pd.DataFrame(
             {
                 "Campo": ["Proyecto", "Cliente", "IVA %", "Subtotal", "Total"],
                 "Valor": [
@@ -74,20 +79,32 @@ def export_to_excel(project_result, areas_summary_df, bom_df):
                     project_result.quote_global.total,
                 ],
             }
-        )
-        meta_df.to_excel(writer, index=False, sheet_name="Proyecto")
+        ),
+        "Resumen_Areas": areas_summary_df,
+        "BOM_Global": bom_df,
+    }
 
-        # Hoja de resumen por campana
-        areas_summary_df.to_excel(writer, index=False, sheet_name="Resumen_Areas")
-
-        # Hoja de BOM global
-        bom_df.to_excel(writer, index=False, sheet_name="BOM_Global")
+    # 1) Intentar con xlsxwriter
+    try:
+        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+            for sheet_name, df in sheets.items():
+                df.to_excel(writer, index=False, sheet_name=sheet_name)
+    except Exception:
+        # 2) Fallback: engine por defecto (openpyxl u otro)
+        output = io.BytesIO()
+        with pd.ExcelWriter(output) as writer:
+            for sheet_name, df in sheets.items():
+                df.to_excel(writer, index=False, sheet_name=sheet_name)
 
     output.seek(0)
     return output
 
 
 def export_to_pdf(project_result, areas_summary_df, bom_df):
+    """
+    Exporta un PDF sencillo con resumen de proyecto, áreas y BOM.
+    Si falta reportlab, devuelve (None, mensaje_error).
+    """
     try:
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas
@@ -739,3 +756,4 @@ else:
         "Configura las campanas (hazard areas) y sus equipos, luego presiona "
         "**Calcular sistema R-102 para todo el proyecto**."
     )
+
