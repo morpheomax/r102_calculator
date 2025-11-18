@@ -139,6 +139,19 @@ def add_bom_item(bom: List[BOMItem], part_code: str, qty: int) -> None:
     bom.append(BOMItem(part=part, quantity=qty))
 
 
+def merge_boms(boms: List[List[BOMItem]]) -> List[BOMItem]:
+    """NUEVO: fusiona varios BOM en uno solo (por proyecto)."""
+    merged: Dict[str, BOMItem] = {}
+    for bom in boms:
+        for item in bom:
+            code = item.part.code
+            if code in merged:
+                merged[code].quantity += item.quantity
+            else:
+                merged[code] = BOMItem(part=item.part, quantity=item.quantity)
+    return list(merged.values())
+
+
 # -------------------------
 # Reglas simplificadas por tipo de equipo
 # -------------------------
@@ -226,7 +239,7 @@ def select_cylinders_and_cartridge(total_flow_number: float) -> CylinderConfig:
 
 
 # -------------------------
-# Motor principal de diseño
+# Motor principal de diseño (por HAZARD AREA)
 # -------------------------
 
 @dataclass
@@ -238,6 +251,7 @@ class DesignInput:
     incluir_extintor_k: bool = False
     cantidad_extintores_k: int = 1
     design_mode: DesignMode = DesignMode.APPLIANCE_SPECIFIC
+    nombre_area: str = ""       # NUEVO: nombre de la hazard area (ej. "Campana 1")
 
 
 @dataclass
@@ -247,9 +261,13 @@ class DesignOutput:
     nozzle_breakdown: Dict[str, int]
     cylinder_config: CylinderConfig
     warnings: List[str] = field(default_factory=list)
+    nombre_area: str = ""       # NUEVO: se copia desde el input
 
 
 def design_r102_system(design_input: DesignInput, iva_rate: float = 0.19) -> DesignOutput:
+    """
+    Calcula el diseño para UNA hazard area (campana + ducto + equipos).
+    """
     bom: List[BOMItem] = []
     nozzle_counts: Dict[str, int] = {}
     warnings: List[str] = []
@@ -375,6 +393,61 @@ def design_r102_system(design_input: DesignInput, iva_rate: float = 0.19) -> Des
         nozzle_breakdown=nozzle_counts,
         cylinder_config=cyl_cfg,
         warnings=warnings,
+        nombre_area=design_input.nombre_area,
+    )
+
+
+# -------------------------
+# NUEVO: Modelo de PROYECTO con múltiples hazard areas
+# -------------------------
+
+@dataclass
+class ProjectInput:
+    nombre_proyecto: str
+    nombre_cliente: str
+    hazard_areas: List[DesignInput]
+    iva_rate: float = 0.19
+
+
+@dataclass
+class ProjectOutput:
+    nombre_proyecto: str
+    nombre_cliente: str
+    areas: List[DesignOutput]
+    quote_global: QuoteResult
+
+
+def design_project(project_input: ProjectInput) -> ProjectOutput:
+    """
+    Calcula todas las hazard areas y arma un BOM + totales globales.
+    """
+    area_results: List[DesignOutput] = []
+    all_boms: List[List[BOMItem]] = []
+
+    for area_input in project_input.hazard_areas:
+        result = design_r102_system(area_input, iva_rate=project_input.iva_rate)
+        area_results.append(result)
+        all_boms.append(result.quote.bom)
+
+    # Fusionar BOMs
+    bom_global = merge_boms(all_boms)
+    subtotal = sum(item.part.unit_price * item.quantity for item in bom_global)
+    iva_amount = round(subtotal * project_input.iva_rate, 0)
+    total = subtotal + iva_amount
+
+    quote_global = QuoteResult(
+        bom=bom_global,
+        subtotal=subtotal,
+        iva_rate=project_input.iva_rate,
+        iva_amount=iva_amount,
+        total=total,
+    )
+
+    return ProjectOutput(
+        nombre_proyecto=project_input.nombre_proyecto,
+        nombre_cliente=project_input.nombre_cliente,
+        areas=area_results,
+        quote_global=quote_global,
     )
 
 
@@ -422,18 +495,33 @@ def demo():
         incluir_extintor_k=True,
         cantidad_extintores_k=1,
         design_mode=DesignMode.APPLIANCE_SPECIFIC,
+        nombre_area="Campana 1",
     )
-    out = design_r102_system(di)
 
-    print("Número de caudal total:", out.total_flow_number)
-    print("Boquillas:", out.nozzle_breakdown)
-    print("Warnings:")
-    for w in out.warnings:
-        print(" -", w)
-    print("BOM:")
-    for item in out.quote.bom:
+    project = ProjectInput(
+        nombre_proyecto="Restaurante Demo",
+        nombre_cliente="Cliente X",
+        hazard_areas=[di],
+        iva_rate=0.19,
+    )
+
+    out = design_project(project)
+
+    print("Proyecto:", out.nombre_proyecto, "-", out.nombre_cliente)
+    for area in out.areas:
+        print(f"\nÁrea: {area.nombre_area or 'Sin nombre'}")
+        print("  Número de caudal total:", area.total_flow_number)
+        print("  Boquillas:", area.nozzle_breakdown)
+        print("  Warnings:")
+        for w in area.warnings:
+            print("   -", w)
+
+    print("\nBOM Global:")
+    for item in out.quote_global.bom:
         print(f"  {item.part.code} - {item.part.nombre} x {item.quantity} @ {item.part.unit_price}")
-    print("Subtotal:", out.quote.subtotal, "IVA:", out.quote.iva_amount, "Total:", out.quote.total)
+    print("Subtotal:", out.quote_global.subtotal,
+          "IVA:", out.quote_global.iva_amount,
+          "Total:", out.quote_global.total)
 
 
 if __name__ == "__main__":
