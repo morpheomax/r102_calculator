@@ -29,9 +29,8 @@ st.write(
     "a partir de las dimensiones de la campana, ducto y equipos."
 )
 
-st.markdown(
-    "> **Tip:** Usa esta versión para validar diseños reales y detectar posibles "
-    "diferencias contra el cálculo manual o hojas ANSUL."
+st.caption(
+    "Versión de prueba para validar diseños reales. Úsala junto al manual técnico R-102."
 )
 
 # -------------------------
@@ -155,11 +154,10 @@ st.subheader("Hazard area / Campana")
 area_name = st.text_input(
     "Nombre del área/campana",
     value="Campana 1",
-    help="Puedes usar nombres como 'Campana Cocina Caliente', 'Campana Freidoras', etc.",
+    help="Ej: 'Campana Cocina Caliente', 'Campana Freidoras', etc.",
 )
 
 st.subheader("Equipos bajo la campana")
-
 st.markdown(
     "Completa los equipos que están **directamente bajo esta campana**. "
     "La posición se mide desde el borde izquierdo de la campana (0 mm)."
@@ -183,103 +181,115 @@ tipo_options = {
 }
 
 for i in range(num_appliances):
-    st.markdown(f"### Equipo {i + 1}")
-    cols = st.columns(7)
+    with st.expander(f"Equipo {i + 1}", expanded=True if i < 2 else False):
+        # Fila 1: tipo + nombre + (bates si corresponde)
+        row1 = st.columns([1.2, 2.0, 1.0])
 
-    with cols[0]:
-        tipo_label = st.selectbox(
-            "Tipo",
-            options=list(tipo_options.keys()),
-            key=f"tipo_{i}",
-        )
-        tipo = tipo_options[tipo_label]
+        with row1[0]:
+            tipo_label = st.selectbox(
+                "Tipo",
+                options=list(tipo_options.keys()),
+                key=f"tipo_{i}",
+            )
+            tipo = tipo_options[tipo_label]
 
-    with cols[1]:
-        nombre = st.text_input(
-            "Nombre / referencia",
-            value=f"{tipo_label} #{i + 1}",
-            key=f"nombre_{i}",
-        )
+        with row1[1]:
+            nombre = st.text_input(
+                "Nombre / referencia",
+                value=f"{tipo_label} #{i + 1}",
+                key=f"nombre_{i}",
+            )
 
-    with cols[2]:
-        ancho = st.number_input(
-            "Ancho (mm)",
-            min_value=300,
-            max_value=2000,
-            value=600,
-            step=50,
-            key=f"ancho_{i}",
-            help="Ancho de la superficie de cocción.",
-        )
+        # Nº de bateas solo si es freidora
+        num_vats = 1
+        with row1[2]:
+            if tipo == ApplianceType.FRYER:
+                num_vats = st.selectbox(
+                    "Nº bateas",
+                    options=[1, 2],
+                    index=1 if i == 0 else 0,
+                    key=f"vats_{i}",
+                )
+            else:
+                st.markdown("<br>", unsafe_allow_html=True)
 
-    with cols[3]:
-        fondo = st.number_input(
-            "Fondo (mm)",
-            min_value=400,
-            max_value=1500,
-            value=600,
-            step=50,
-            key=f"fondo_{i}",
-            help="Profundidad de la superficie de cocción.",
-        )
+        # Fila 2: dimensiones + alturas + posición
+        row2 = st.columns(4)
 
-    with cols[4]:
-        altura_sup = st.number_input(
-            "Altura superficie sobre piso (mm)",
-            min_value=600,
-            max_value=1200,
-            value=900,
-            step=50,
-            key=f"altsup_{i}",
-            help="Altura aproximada de la plancha / quemadores / cuba de freidora.",
-        )
+        with row2[0]:
+            ancho = st.number_input(
+                "Ancho (mm)",
+                min_value=300,
+                max_value=2000,
+                value=600,
+                step=50,
+                key=f"ancho_{i}",
+            )
 
-    with cols[5]:
-        altura_boq = st.number_input(
-            "Boquilla sobre superficie (mm)",
-            min_value=500,
-            max_value=1500,
-            value=1100,
-            step=50,
-            key=f"altb_{i}",
-            help="Altura de la boquilla por encima de la superficie de cocción.",
-        )
+        with row2[1]:
+            fondo = st.number_input(
+                "Fondo (mm)",
+                min_value=400,
+                max_value=1500,
+                value=600,
+                step=50,
+                key=f"fondo_{i}",
+            )
 
-    with cols[6]:
-        default_pos = max(0, int((hood_length - ancho) / 2))
-        pos_inicio = st.number_input(
-            "Posición desde borde izquierdo (mm)",
-            min_value=0,
-            max_value=int(hood_length),
-            value=default_pos,
-            step=50,
-            key=f"pos_{i}",
-            help="Dónde parte el equipo respecto del borde izquierdo de la campana.",
-        )
+        with row2[2]:
+            altura_sup = st.number_input(
+                "Alt. sup. (mm)",
+                min_value=600,
+                max_value=1200,
+                value=900,
+                step=50,
+                key=f"altsup_{i}",
+            )
 
-    # Nº de bateas solo si es freidora
-    num_vats = 1
-    if tipo == ApplianceType.FRYER:
-        num_vats = st.selectbox(
-            "Nº de bateas",
-            options=[1, 2],
-            index=1 if i == 0 else 0,
-            key=f"vats_{i}",
-            help="Número de cubas de aceite que tiene la freidora.",
-        )
+        with row2[3]:
+            altura_boq = st.number_input(
+                "Boq. sobre sup. (mm)",
+                min_value=500,
+                max_value=1500,
+                value=1100,
+                step=50,
+                key=f"altb_{i}",
+            )
 
-    appliances.append(
-        Appliance(
-            tipo=tipo,
-            nombre=nombre,
-            ancho_mm=ancho,
-            fondo_mm=fondo,
-            altura_superficie_mm=altura_sup,
-            altura_boquilla_sobre_superficie_mm=altura_boq,
-            pos_inicio_mm=pos_inicio,
-            num_vats=num_vats,
+        # Fila 3: posición + resumen simple
+        row3 = st.columns([1.3, 2.7])
+
+        with row3[0]:
+            default_pos = max(0, int((hood_length - ancho) / 2))
+            pos_inicio = st.number_input(
+                "Pos. desde borde (mm)",
+                min_value=0,
+                max_value=int(hood_length),
+                value=default_pos,
+                step=50,
+                key=f"pos_{i}",
+            )
+
+        with row3[1]:
+            fin_eq = pos_inicio + ancho
+            dentro = 0 <= pos_inicio and fin_eq <= hood_length
+            st.caption(
+                f"Ocupa desde **{pos_inicio} mm** hasta **{fin_eq} mm** "
+                f"({ '✅ dentro de la campana' if dentro else '⚠️ se sale de la campana' })."
+            )
+
+        appliances.append(
+            Appliance(
+                tipo=tipo,
+                nombre=nombre,
+                ancho_mm=ancho,
+                fondo_mm=fondo,
+                altura_superficie_mm=altura_sup,
+                altura_boquilla_sobre_superficie_mm=altura_boq,
+                pos_inicio_mm=pos_inicio,
+                num_vats=num_vats,
+            )
         )
-    )
 
 
 # -------------------------
@@ -350,6 +360,16 @@ if st.button("Calcular sistema R-102", type="primary"):
         df_layout = pd.DataFrame(layout_rows)
 
         if not df_layout.empty:
+            # Codificar estado en colores más intuitivos
+            df_layout["Estado"] = df_layout["Dentro campana"].map(
+                {"Sí": "Dentro de campana", "No": "Fuera de campana"}
+            )
+
+            color_scale = alt.Scale(
+                domain=["Dentro de campana", "Fuera de campana"],
+                range=["#4CAF50", "#E53935"],  # verde / rojo
+            )
+
             chart = (
                 alt.Chart(df_layout)
                 .mark_bar()
@@ -361,7 +381,7 @@ if st.button("Calcular sistema R-102", type="primary"):
                     ),
                     x2="Fin (mm):Q",
                     y=alt.Y("Equipo:N", sort=None, title="Equipo"),
-                    color=alt.Color("Tipo:N", title="Tipo de equipo"),
+                    color=alt.Color("Estado:N", scale=color_scale, title="Estado"),
                     tooltip=[
                         "Equipo",
                         "Tipo",
@@ -377,9 +397,22 @@ if st.button("Calcular sistema R-102", type="primary"):
             )
 
             st.altair_chart(chart, use_container_width=True)
+            st.caption(
+                f"La campana va de **0 mm** a **{hood_length} mm** (eje horizontal). "
+                "Las barras muestran el ancho de cada equipo."
+            )
 
         st.markdown("**Resumen geométrico de equipos:**")
         st.dataframe(df_layout, use_container_width=True)
+
+        # Aviso rápido de equipos fuera de campana
+        fuera = df_layout[df_layout["Dentro campana"] == "No"]
+        if not fuera.empty:
+            nombres_fuera = ", ".join(fuera["Equipo"].tolist())
+            st.warning(
+                f"Los siguientes equipos quedan parcial o totalmente fuera del largo de la campana: "
+                f"**{nombres_fuera}**. Revisa dimensiones o posición."
+            )
 
         st.divider()
 
@@ -416,7 +449,7 @@ if st.button("Calcular sistema R-102", type="primary"):
                 )
             else:
                 st.success(
-                    "Sin advertencias geométricas básicas. Revisa de todos modos con el manual técnico."
+                    "Sin advertencias geométricas básicas. Revisa igual contra el manual técnico R-102."
                 )
 
         # --- Boquillas y cilindros ---
@@ -475,8 +508,8 @@ if st.button("Calcular sistema R-102", type="primary"):
             st.write(f"- Total: **${global_quote.total:,.0f}**")
 
             st.info(
-                "Recuerda: los valores son referenciales según el catálogo interno. "
-                "Podrás conectar esto con CRM / listas de precios oficiales en la siguiente etapa."
+                "Valores referenciales según catálogo interno. "
+                "En la siguiente etapa podremos conectarlo con CRM / listas de precios oficiales."
             )
 
     except Exception as e:
