@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
+import io
 
 from r102_engine import (
     ApplianceType,
@@ -17,6 +18,147 @@ from r102_engine import (
 )
 
 # -------------------------
+# Helpers para exportar
+# -------------------------
+
+def build_areas_summary_df(areas_data, areas_results):
+    rows = []
+    for idx, (info, res) in enumerate(zip(areas_data, areas_results)):
+        cyl = res.cylinder_config
+        rows.append(
+            {
+                "Campana": res.nombre_area or f"Campana {idx + 1}",
+                "Largo_mm": info["hood_length"],
+                "Fondo_mm": info["hood_depth"],
+                "Altura_mm": info["hood_height"],
+                "Ductos": info["num_ducts"],
+                "Perimetro_ducto_mm": info["duct_perimeter"],
+                "Caudal_total": res.total_flow_number,
+                "Cil_1_5_gal": cyl.num_cylinders_15,
+                "Cil_3_0_gal": cyl.num_cylinders_30,
+                "Cartucho": cyl.cartridge_code,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_bom_df(global_quote):
+    rows = []
+    for item in global_quote.bom:
+        line_total = item.part.unit_price * item.quantity
+        rows.append(
+            {
+                "Código": item.part.code,
+                "Descripción": item.part.nombre,
+                "Unidad": item.part.unidad,
+                "Cantidad": item.quantity,
+                "Precio unitario": item.part.unit_price,
+                "Total línea": line_total,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def export_to_excel(project_result, areas_summary_df, bom_df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        # Hoja de proyecto
+        meta_df = pd.DataFrame(
+            {
+                "Campo": ["Proyecto", "Cliente", "IVA %", "Subtotal", "Total"],
+                "Valor": [
+                    project_result.nombre_proyecto,
+                    project_result.nombre_cliente,
+                    int(project_result.quote_global.iva_rate * 100),
+                    project_result.quote_global.subtotal,
+                    project_result.quote_global.total,
+                ],
+            }
+        )
+        meta_df.to_excel(writer, index=False, sheet_name="Proyecto")
+
+        # Hoja de resumen por campana
+        areas_summary_df.to_excel(writer, index=False, sheet_name="Resumen_Areas")
+
+        # Hoja de BOM global
+        bom_df.to_excel(writer, index=False, sheet_name="BOM_Global")
+
+    output.seek(0)
+    return output
+
+
+def export_to_pdf(project_result, areas_summary_df, bom_df):
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+    except ImportError:
+        return None, (
+            "Para exportar a PDF necesitas instalar reportlab en tu entorno "
+            "(pip install reportlab)."
+        )
+
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+
+    y = height - 40
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(40, y, "Diseño sistema de supresión R-102")
+    y -= 20
+    c.setFont("Helvetica", 10)
+    c.drawString(40, y, f"Proyecto: {project_result.nombre_proyecto}")
+    y -= 14
+    c.drawString(40, y, f"Cliente: {project_result.nombre_cliente}")
+    y -= 14
+    c.drawString(
+        40,
+        y,
+        f"IVA: {int(project_result.quote_global.iva_rate * 100)}%   "
+        f"Total: ${project_result.quote_global.total:,.0f}",
+    )
+    y -= 24
+
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(40, y, "Resumen por campana")
+    y -= 16
+    c.setFont("Helvetica", 9)
+    for _, row in areas_summary_df.iterrows():
+        line = (
+            f"{row['Campana']}: Caudal={row['Caudal_total']:.1f}, "
+            f"Cil 1.5={row['Cil_1_5_gal']}, "
+            f"Cil 3.0={row['Cil_3_0_gal']}, Cartucho={row['Cartucho']}"
+        )
+        if y < 80:
+            c.showPage()
+            y = height - 40
+            c.setFont("Helvetica", 9)
+        c.drawString(40, y, line)
+        y -= 12
+
+    y -= 16
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(40, y, "BOM global (resumen)")
+    y -= 16
+    c.setFont("Helvetica", 9)
+    for _, row in bom_df.iterrows():
+        line = (
+            f"{row['Código']} - {row['Descripción']} "
+            f"(x{row['Cantidad']}) = ${row['Total línea']:,.0f}"
+        )
+        if y < 80:
+            c.showPage()
+            y = height - 40
+            c.setFont("Helvetica", 9)
+        c.drawString(40, y, line)
+        y -= 12
+
+    c.showPage()
+    c.save()
+    buffer.seek(0)
+    return buffer, None
+
+
+# -------------------------
 # Configuración básica de la app
 # -------------------------
 
@@ -24,17 +166,17 @@ st.set_page_config(page_title="Diseñador R-102", layout="wide")
 
 st.title("🧯 Diseñador de sistema de supresión de cocina R-102")
 st.write(
-    "Herramienta demo para que el vendedor diseñe rápidamente un sistema R-102 "
+    "Herramienta para que el vendedor diseñe rápidamente un sistema R-102 "
     "a partir de las dimensiones de las campanas, ductos y equipos."
 )
-st.caption("Versión de validación interna. Usar siempre junto al manual técnico R-102.")
+st.caption("Versión de validación interna. Úsala siempre junto al manual técnico R-102.")
 
 # -------------------------
 # Sidebar: datos de proyecto globales
 # -------------------------
 
 with st.sidebar:
-    st.header("Datos de proyecto")
+    st.header("1️⃣ Datos de proyecto")
 
     project_name = st.text_input(
         "Nombre del proyecto",
@@ -47,7 +189,7 @@ with st.sidebar:
     )
 
     num_areas = st.number_input(
-        "Número de campanas / hazard areas",
+        "Número de campanas / áreas",
         min_value=1,
         max_value=5,
         value=1,
@@ -56,17 +198,17 @@ with st.sidebar:
     )
 
     st.divider()
-    st.header("Modo de diseño")
+    st.header("2️⃣ Modo de diseño (global)")
 
     modo_label = st.radio(
-        "Modo de diseño (para todas las campanas)",
+        "Modo de diseño",
         [
             "Diseño por equipo (appliance-specific)",
             "Overlapping estándar",
         ],
         help=(
-            "Appliance-specific: cada boquilla está diseñada para un equipo específico.\n"
-            "Overlapping: zona de protección solapada bajo la campana."
+            "- **Appliance-specific**: cada boquilla protege un equipo definido.\n"
+            "- **Overlapping**: zona de protección solapada bajo la campana."
         ),
     )
     design_mode = (
@@ -76,13 +218,14 @@ with st.sidebar:
     )
 
     st.divider()
-    st.header("Opciones de cotización (global)")
+    st.header("3️⃣ Opciones de cotización")
 
     include_service = st.checkbox("Incluir servicio de montaje", value=True)
 
     include_ext_k = st.checkbox(
-        "Incluir extintor(es) Clase K en la cotización",
+        "Incluir extintor(es) Clase K",
         value=False,
+        help="Agrega extintores Clase K a la cotización como complemento.",
     )
     qty_ext_k = 1
     if include_ext_k:
@@ -100,9 +243,10 @@ with st.sidebar:
 # Definición de cada campana (hazard area)
 # -------------------------
 
+st.markdown("## Definición de campanas / hazard areas")
+
 tabs = st.tabs([f"Campana {i+1}" for i in range(num_areas)])
 
-# Guardamos los datos de cada área para usarlos luego en el cálculo y visualización
 areas_data = []
 
 tipo_options = {
@@ -123,69 +267,81 @@ for area_idx in range(num_areas):
             help="Ej: 'Campana Cocina Caliente', 'Campana Freidoras', etc.",
         )
 
-        st.markdown("#### Datos de campana y ducto")
+        st.markdown("### Paso 1: Datos de campana y ducto")
 
-        hood_length = st.number_input(
-            "Largo campana (mm)",
-            min_value=1000,
-            max_value=8000,
-            value=3000,
-            step=100,
-            key=f"hood_length_{area_idx}",
-            help="Largo total de la campana visto en planta.",
-        )
-        hood_depth = st.number_input(
-            "Fondo campana (mm)",
-            min_value=600,
-            max_value=2000,
-            value=1200,
-            step=50,
-            key=f"hood_depth_{area_idx}",
-            help="Profundidad de la campana medida desde el muro.",
-        )
-        hood_height = st.number_input(
-            "Altura desde piso a la campana (mm)",
-            min_value=1800,
-            max_value=3000,
-            value=2100,
-            step=50,
-            key=f"hood_height_{area_idx}",
-            help="Altura del borde inferior de la campana respecto del piso.",
-        )
+        col_c1, col_c2, col_c3 = st.columns(3)
 
-        filtro_tipo = st.selectbox(
-            "Tipo de filtro de campana",
-            options=list(HoodFilterType),
-            format_func=lambda x: x.value.capitalize(),
-            key=f"filtro_{area_idx}",
-            help="Selecciona el tipo de filtro / plenum que tiene esta campana.",
-        )
+        with col_c1:
+            hood_length = st.number_input(
+                "Largo campana (mm)",
+                min_value=1000,
+                max_value=8000,
+                value=3000,
+                step=100,
+                key=f"hood_length_{area_idx}",
+                help="Largo total de la campana visto en planta (frente).",
+            )
 
-        num_ducts = st.number_input(
-            "Número de ductos",
-            min_value=0,
-            max_value=5,
-            value=1,
-            step=1,
-            key=f"num_ducts_{area_idx}",
-            help="Cantidad de ductos conectados a esta campana.",
-        )
+        with col_c2:
+            hood_depth = st.number_input(
+                "Fondo campana (mm)",
+                min_value=600,
+                max_value=2000,
+                value=1200,
+                step=50,
+                key=f"hood_depth_{area_idx}",
+                help="Profundidad de la campana medida desde el muro.",
+            )
 
-        duct_perimeter = st.number_input(
-            "Perímetro de cada ducto (mm)",
-            min_value=0,
-            max_value=4000,
-            value=1200,
-            step=50,
-            key=f"duct_perimeter_{area_idx}",
-            help="Perímetro del ducto (2·ancho + 2·alto). Usa 0 si aún no está definido.",
-        )
+        with col_c3:
+            hood_height = st.number_input(
+                "Altura desde piso a la campana (mm)",
+                min_value=1800,
+                max_value=3000,
+                value=2100,
+                step=50,
+                key=f"hood_height_{area_idx}",
+                help="Altura del borde inferior de la campana respecto del piso.",
+            )
 
-        st.markdown("#### Equipos bajo esta campana")
+        col_c4, col_c5, col_c6 = st.columns(3)
+
+        with col_c4:
+            filtro_tipo = st.selectbox(
+                "Tipo de filtro",
+                options=list(HoodFilterType),
+                format_func=lambda x: x.value.capitalize(),
+                key=f"filtro_{area_idx}",
+                help="Selecciona el tipo de filtro / plenum de esta campana.",
+            )
+
+        with col_c5:
+            num_ducts = st.number_input(
+                "Nº de ductos",
+                min_value=0,
+                max_value=5,
+                value=1,
+                step=1,
+                key=f"num_ducts_{area_idx}",
+                help="Cantidad de ductos que salen de esta campana.",
+            )
+
+        with col_c6:
+            duct_perimeter = st.number_input(
+                "Perímetro ducto (mm)",
+                min_value=0,
+                max_value=4000,
+                value=1200,
+                step=50,
+                key=f"duct_perimeter_{area_idx}",
+                help="Perímetro aprox. del ducto (2·ancho + 2·alto).",
+            )
+
+        st.markdown("### Paso 2: Equipos bajo esta campana")
         st.markdown(
             "Incluye solo los equipos que están **directamente bajo esta campana**.\n\n"
             "- La posición se mide a lo largo del frente de la campana, desde el borde izquierdo.\n"
-            "- 0 mm = equipo pegado al borde izquierdo de la campana."
+            "- **0 mm** = equipo pegado al borde izquierdo de la campana."
         )
 
         num_appliances = st.number_input(
@@ -262,7 +418,7 @@ for area_idx in range(num_areas):
                         value=900,
                         step=50,
                         key=f"altsup_{area_idx}_{i}",
-                        help="Altura aproximada de la plancha / quemadores / cuba respecto del piso.",
+                        help="Altura aprox. de la plancha / quemadores / cuba respecto del piso.",
                     )
 
                 # Fila 3: posición + altura boquilla
@@ -279,8 +435,8 @@ for area_idx in range(num_areas):
                         key=f"pos_{area_idx}_{i}",
                         help=(
                             "Distancia, medida a lo largo del frente de la campana, "
-                            "desde el borde izquierdo hasta el INICIO del equipo.\n"
-                            "Ej: 0 mm = pegado al borde izquierdo."
+                            "desde el borde izquierdo hasta el **inicio** del equipo.\n"
+                            "Ejemplo: 0 mm = equipo pegado al borde izquierdo."
                         ),
                     )
 
@@ -293,12 +449,12 @@ for area_idx in range(num_areas):
                         ],
                         key=f"altmode_{area_idx}_{i}",
                         help=(
-                            "Si no conoces la altura exacta, deja 'Automática (recomendada)'.\n"
-                            "Usará un valor estándar (~1100 mm sobre la superficie)."
+                            "Si no conoces la altura exacta, usa 'Automática'. "
+                            "Se toma un valor típico dentro del rango permitido."
                         ),
                     )
                     if alt_mode.startswith("Auto"):
-                        altura_boq = 1100.0  # valor típico recomendado dentro del rango R-102
+                        altura_boq = 1100.0  # valor típico recomendado
                         st.caption(
                             "Usando altura recomendada aproximada: **1100 mm** sobre la superficie."
                         )
@@ -334,7 +490,6 @@ for area_idx in range(num_areas):
                     )
                 )
 
-        # Guardamos todo lo necesario de esta campana
         areas_data.append(
             {
                 "nombre_area": area_name,
@@ -352,9 +507,10 @@ for area_idx in range(num_areas):
 # Botón de cálculo global
 # -------------------------
 
+st.markdown("## Calcular sistema completo")
+
 if st.button("Calcular sistema R-102 para todo el proyecto", type="primary"):
     try:
-        # Construimos las hazard areas (DesignInput) desde areas_data
         hazard_areas = []
         for area_info in areas_data:
             hood = Hood(
@@ -394,9 +550,7 @@ if st.button("Calcular sistema R-102 para todo el proyecto", type="primary"):
             f"## Proyecto: **{project_result.nombre_proyecto}** — Cliente: **{project_result.nombre_cliente}**"
         )
 
-        # -------------------------
         # Detalle por campana / área
-        # -------------------------
         for idx, (area_info, area_result) in enumerate(
             zip(areas_data, project_result.areas)
         ):
@@ -525,29 +679,14 @@ if st.button("Calcular sistema R-102 para todo el proyecto", type="primary"):
                 )
 
         # -------------------------
-        # BOM y totales globales del proyecto
+        # BOM y totales globales del proyecto + export
         # -------------------------
         st.divider()
         st.markdown("## BOM y costos globales del proyecto")
 
         global_quote = project_result.quote_global
-
-        bom_rows = []
-        for item in global_quote.bom:
-            line_total = item.part.unit_price * item.quantity
-            bom_rows.append(
-                {
-                    "Código": item.part.code,
-                    "Descripción": item.part.nombre,
-                    "Unidad": item.part.unidad,
-                    "Cantidad": item.quantity,
-                    "Precio unitario": item.part.unit_price,
-                    "Total línea": line_total,
-                }
-            )
-
-        df_bom = pd.DataFrame(bom_rows)
-        st.dataframe(df_bom, use_container_width=True)
+        bom_df = build_bom_df(global_quote)
+        st.dataframe(bom_df, use_container_width=True)
 
         st.write("**Totales proyecto:**")
         st.write(f"- Subtotal: **${global_quote.subtotal:,.0f}**")
@@ -557,9 +696,39 @@ if st.button("Calcular sistema R-102 para todo el proyecto", type="primary"):
         )
         st.write(f"- Total: **${global_quote.total:,.0f}**")
 
+        # DataFrames para exportar
+        areas_summary_df = build_areas_summary_df(areas_data, project_result.areas)
+
+        st.markdown("### Exportar resultados")
+
+        # Excel
+        excel_bytes = export_to_excel(project_result, areas_summary_df, bom_df)
+        st.download_button(
+            label="⬇️ Descargar Excel (proyecto)",
+            data=excel_bytes,
+            file_name=f"R102_{project_result.nombre_proyecto}.xlsx",
+            mime=(
+                "application/vnd.openxmlformats-"
+                "officedocument.spreadsheetml.sheet"
+            ),
+        )
+
+        # PDF
+        pdf_bytes, pdf_error = export_to_pdf(project_result, areas_summary_df, bom_df)
+        if pdf_bytes:
+            st.download_button(
+                label="⬇️ Descargar PDF (proyecto)",
+                data=pdf_bytes,
+                file_name=f"R102_{project_result.nombre_proyecto}.pdf",
+                mime="application/pdf",
+            )
+        elif pdf_error:
+            st.warning(pdf_error)
+
         st.info(
-            "Valores referenciales según catálogo interno. "
-            "En la siguiente etapa podremos conectarlo con CRM y listas de precios oficiales."
+            "Usa estos archivos como respaldo del cálculo y para comparar con "
+            "proyectos reales. Si encuentras diferencias con el diseño manual, "
+            "anótalas para ajustar el motor en la siguiente iteración."
         )
 
     except Exception as e:
